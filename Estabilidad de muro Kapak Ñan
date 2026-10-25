@@ -1,0 +1,275 @@
+import tkinter as tk
+from tkinter import filedialog, ttk, messagebox
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import mplstereonet
+
+class MuroSecoGeotechApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Evaluación Geotécnica y Cinemática - Muros y Taludes Rocosos")
+        self.root.geometry("1300x820")
+        self.root.configure(bg="#1e272e")
+
+        # Configuración de estilos ttk
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("Treeview", 
+                        background="#2f3542", 
+                        foreground="#ffffff", 
+                        rowheight=22, 
+                        fieldbackground="#2f3542",
+                        font=("Segoe UI", 9))
+        style.configure("Treeview.Heading", 
+                        background="#57606f", 
+                        foreground="#ffffff", 
+                        font=("Segoe UI", 9, "bold"))
+        style.map("Treeview", background=[('selected', '#1e90ff')])
+
+        self.df = None
+        self.fig = None
+        self.crear_layout()
+
+    def crear_layout(self):
+        # Panel Superior: Controles y Carga
+        top_frame = tk.Frame(self.root, bg="#2f3542", padx=15, pady=10)
+        top_frame.pack(side=tk.TOP, fill=tk.X)
+
+        btn_cargar = tk.Button(top_frame, text="📂 Cargar CSV (DIPS_MURO_FINAL.csv)", 
+                               command=self.cargar_csv, bg="#00d2d3", fg="#1e272e", 
+                               font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=12, pady=6)
+        btn_cargar.pack(side=tk.LEFT, padx=5)
+
+        # Parámetros geotécnicos editables
+        params_container = tk.Frame(top_frame, bg="#2f3542")
+        params_container.pack(side=tk.LEFT, padx=20)
+
+        # Cohesión
+        tk.Label(params_container, text="c (kPa):", bg="#2f3542", fg="white", font=("Segoe UI", 9)).grid(row=0, column=0, padx=4)
+        self.entry_c = tk.Entry(params_container, width=6, font=("Segoe UI", 9))
+        self.entry_c.insert(0, "25")
+        self.entry_c.grid(row=0, column=1, padx=4)
+
+        # Ángulo de fricción
+        tk.Label(params_container, text="φ (°):", bg="#2f3542", fg="white", font=("Segoe UI", 9)).grid(row=0, column=2, padx=4)
+        self.entry_phi = tk.Entry(params_container, width=6, font=("Segoe UI", 9))
+        self.entry_phi.insert(0, "32")
+        self.entry_phi.grid(row=0, column=3, padx=4)
+
+        # Esfuerzo Vertical Sigma_v
+        tk.Label(params_container, text="σv (kPa):", bg="#2f3542", fg="white", font=("Segoe UI", 9)).grid(row=0, column=4, padx=4)
+        self.entry_sv = tk.Entry(params_container, width=7, font=("Segoe UI", 9))
+        self.entry_sv.insert(0, "150")
+        self.entry_sv.grid(row=0, column=5, padx=4)
+
+        # Esfuerzo Horizontal Sigma_h
+        tk.Label(params_container, text="σh (kPa):", bg="#2f3542", fg="white", font=("Segoe UI", 9)).grid(row=0, column=6, padx=4)
+        self.entry_sh = tk.Entry(params_container, width=7, font=("Segoe UI", 9))
+        self.entry_sh.insert(0, "75")
+        self.entry_sh.grid(row=0, column=7, padx=4)
+
+        # Orientación de la cara del muro (Muro Dip / Dip Dir para análisis)
+        tk.Label(params_container, text="Cara Muro (Dip/Dir):", bg="#2f3542", fg="#f1c40f", font=("Segoe UI", 9, "bold")).grid(row=0, column=8, padx=4)
+        self.entry_wall_dip = tk.Entry(params_container, width=4, font=("Segoe UI", 9))
+        self.entry_wall_dip.insert(0, "75")
+        self.entry_wall_dip.grid(row=0, column=9, padx=2)
+        self.entry_wall_dir = tk.Entry(params_container, width=5, font=("Segoe UI", 9))
+        self.entry_wall_dir.insert(0, "110")
+        self.entry_wall_dir.grid(row=0, column=10, padx=2)
+
+        btn_recalc = tk.Button(top_frame, text="⚡ Recalcular", command=self.procesar_datos,
+                               bg="#ff9f43", fg="#1e272e", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=12, pady=6)
+        btn_recalc.pack(side=tk.LEFT, padx=10)
+
+        # Contenedor central dividido
+        main_paned = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, bg="#1e272e", sashrelief=tk.RAISED)
+        main_paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Izquierda: Tabla y Resumen
+        left_box = tk.Frame(main_paned, bg="#2f3542")
+        main_paned.add(left_box, minsize=550)
+
+        lbl_resumen = tk.Label(left_box, text="Resultados del Análisis Tensorial (Mohr-Coulomb)", 
+                               bg="#2f3542", fg="white", font=("Segoe UI", 11, "bold"), pady=6)
+        lbl_resumen.pack(side=tk.TOP, fill=tk.X)
+
+        self.lbl_stats = tk.Label(left_box, text="Cargue un archivo CSV para iniciar el estudio.", 
+                                  bg="#34495e", fg="#00d2d3", font=("Consolas", 10), justify=tk.LEFT, pady=5)
+        self.lbl_stats.pack(side=tk.TOP, fill=tk.X, padx=5, pady=3)
+
+        # Treeview para mostrar filas
+        columns = ("ID", "Dip", "DipDir", "Strike", "Sigma_n", "Tau_act", "Tau_res", "FS", "Estado")
+        self.tree = ttk.Treeview(left_box, columns=columns, show='headings', height=20)
+        for col in columns:
+            self.tree.heading(col, text=col)
+            width = 50 if col in ["ID", "Dip", "DipDir"] else 65
+            self.tree.column(col, width=width, anchor=tk.CENTER)
+
+        tree_scroll = ttk.Scrollbar(left_box, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_scroll.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0), pady=5)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+
+        # Derecha: Estereograma RockSlope
+        self.right_box = tk.Frame(main_paned, bg="#ffffff")
+        main_paned.add(self.right_box, minsize=620)
+
+    def cargar_csv(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Archivos CSV", "*.csv"), ("Todos", "*.*")])
+        if not file_path:
+            return
+
+        try:
+            try:
+                df = pd.read_csv(file_path, sep=';', encoding='utf-8')
+                if 'Dip' not in [c.strip() for c in df.columns]:
+                    df = pd.read_csv(file_path, sep=',', encoding='utf-8')
+            except Exception:
+                df = pd.read_csv(file_path, sep=None, engine='python')
+
+            df.columns = [c.strip() for c in df.columns]
+
+            if 'Dip' not in df.columns or 'Dip direction' not in df.columns:
+                messagebox.showerror("Error de Columnas", "El archivo debe contener las columnas 'Dip' y 'Dip direction'.")
+                return
+
+            self.df = df
+            self.procesar_datos()
+
+        except Exception as e:
+            messagebox.showerror("Error al leer CSV", f"Detalle del error:\n{str(e)}")
+
+    def procesar_datos(self):
+        if self.df is None:
+            return
+
+        try:
+            c = float(self.entry_c.get())
+            phi_deg = float(self.entry_phi.get())
+            phi = np.radians(phi_deg)
+            sv = float(self.entry_sv.get())
+            sh = float(self.entry_sh.get())
+            wall_dip = float(self.entry_wall_dip.get())
+            wall_dir = float(self.entry_wall_dir.get())
+        except ValueError:
+            messagebox.showerror("Error de Parámetros", "Por favor ingresa valores numéricos válidos en los parámetros.")
+            return
+
+        # Limpiar tabla previa
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        sigma_tensor = np.array([
+            [sh,  0.0, 0.0],
+            [0.0, sh,  0.0],
+            [0.0, 0.0, sv]
+        ])
+
+        inestables = 0
+        total = len(self.df)
+        strikes = []
+        dips = []
+        fs_list = []
+
+        for idx, row in self.df.iterrows():
+            dip = float(row['Dip'])
+            dip_dir = float(row['Dip direction'])
+
+            strike = (dip_dir - 90.0) % 360.0
+            strikes.append(strike)
+            dips.append(dip)
+
+            dip_rad = np.radians(dip)
+            dir_rad = np.radians(dip_dir)
+
+            nx = np.sin(dip_rad) * np.sin(dir_rad)
+            ny = np.sin(dip_rad) * np.cos(dir_rad)
+            nz = -np.cos(dip_rad)
+            n_vec = np.array([nx, ny, nz])
+
+            t_vec = sigma_tensor @ n_vec
+            sigma_n = float(np.dot(n_vec, t_vec))
+
+            tau_sq = np.dot(t_vec, t_vec) - (sigma_n ** 2)
+            tau_act = np.sqrt(max(0.0, tau_sq))
+
+            tau_res = c + sigma_n * np.tan(phi)
+            fs = (tau_res / tau_act) if tau_act > 1e-4 else 99.9
+
+            fs_list.append(fs)
+            estado = "INESTABLE" if fs < 1.0 else ("ALERTA" if fs < 1.3 else "ESTABLE")
+            if fs < 1.0:
+                inestables += 1
+
+            if idx < 300:
+                trav_id = row.get('Traverse', idx + 1)
+                self.tree.insert("", tk.END, values=(
+                    int(trav_id), f"{dip:.1f}°", f"{dip_dir:.1f}°", f"{strike:.1f}°",
+                    f"{sigma_n:.1f}", f"{tau_act:.1f}", f"{tau_res:.1f}", f"{fs:.2f}", estado
+                ))
+
+        pct_falla = (inestables / total) * 100
+        self.lbl_stats.config(
+            text=f"Total Planos: {total} | Inestables (FS < 1.0): {inestables} ({pct_falla:.1f}%) | c={c} kPa, φ={phi_deg}°"
+        )
+
+        self.graficar_estereograma(strikes, dips, fs_list, wall_dip, wall_dir, phi_deg)
+
+    def graficar_estereograma(self, strikes, dips, fs_list, wall_dip, wall_dir, phi_deg):
+        # Liberar figuras previas en Matplotlib
+        plt.close('all')
+
+        for widget in self.right_box.winfo_children():
+            widget.destroy()
+
+        fig = plt.figure(figsize=(7.5, 7.5), facecolor="#ffffff")
+        ax = fig.add_subplot(111, projection='stereonet')
+
+        # 1. Contorno de densidad de polos estilo Schmidt
+        ax.density_contourf(strikes, dips, measurement='poles', cmap='Blues', alpha=0.6)
+
+        # 2. Polos de discontinuidades coloreados por Factor de Seguridad
+        fs_arr = np.array(fs_list)
+        mask_inestable = fs_arr < 1.0
+        mask_alerta = (fs_arr >= 1.0) & (fs_arr < 1.3)
+        mask_estable = fs_arr >= 1.3
+
+        strikes_arr = np.array(strikes)
+        dips_arr = np.array(dips)
+
+        if np.any(mask_inestable):
+            ax.pole(strikes_arr[mask_inestable], dips_arr[mask_inestable], 
+                    color='#e74c3c', markersize=4, label='FS < 1.0 (Crítico)')
+        if np.any(mask_alerta):
+            ax.pole(strikes_arr[mask_alerta], dips_arr[mask_alerta], 
+                    color='#f39c12', markersize=3, label='1.0 ≤ FS < 1.3')
+        if np.any(mask_estable):
+            ax.pole(strikes_arr[mask_estable], dips_arr[mask_estable], 
+                    color='#2ecc71', markersize=2, alpha=0.5, label='FS ≥ 1.3')
+
+        # 3. Cara del Muro de Contención / Talud
+        wall_strike = (wall_dir - 90.0) % 360.0
+        ax.plane(wall_strike, wall_dip, color='#2c3e50', linewidth=2.5, 
+                 label=f'Cara Muro ({wall_dip:.0f}/{wall_dir:.0f})')
+
+        # 4. Círculo de fricción cinemática (alrededor del centro)
+        ax.cone(0, 90, 90 - phi_deg, color='#e67e22', linestyle='--', linewidth=1.5, 
+                label=f'Círculo Fricción φ={phi_deg:.0f}°')
+
+        ax.grid(True, color='gray', linestyle=':', alpha=0.6)
+        ax.set_title("Estereograma Cinemático y Densidad de Polos\n(Hemisferio Inferior - Schmidt)", 
+                     fontsize=12, fontweight='bold', pad=15)
+        ax.legend(loc='lower left', bbox_to_anchor=(-0.1, -0.15), ncol=2, fontsize=8)
+
+        canvas = FigureCanvasTkAgg(fig, master=self.right_box)
+        canvas.draw()
+        toolbar = NavigationToolbar2Tk(canvas, self.right_box)
+        toolbar.update()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MuroSecoGeotechApp(root)
+    root.mainloop()
